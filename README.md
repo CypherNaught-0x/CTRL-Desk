@@ -133,6 +133,7 @@ The app has a few environment variables for development and automation:
 | `DESK_CTRL_STEP=find\|connect\|calibrate\|personalise\|done` | Advance onboarding to that step automatically. |
 | `DESK_CTRL_SELECT=<id or name>` | The device to pick on the Find step. |
 | `DESK_CTRL_SETTINGS=1` | Open Settings on start. |
+| `DESK_CTRL_MOVE_TO=<mm>` | Move the desk to this height once connected (handy for capturing motion). |
 
 ## Releases
 

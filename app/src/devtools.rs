@@ -6,6 +6,7 @@
 //!   onboarding flow to that step as soon as each step allows it.
 //! - `DESK_CTRL_SELECT=<device id or name>` picks that device on the Find step.
 //! - `DESK_CTRL_SETTINGS=1` opens the settings dialog on start.
+//! - `DESK_CTRL_MOVE_TO=<mm>` moves the desk there once connected.
 
 use std::path::PathBuf;
 
@@ -18,6 +19,7 @@ pub struct DevTools {
     pub target_step: Option<Step>,
     pub select: Option<String>,
     pub open_settings: bool,
+    pub move_to: Option<f32>,
 }
 
 impl DevTools {
@@ -39,6 +41,7 @@ impl DevTools {
             }),
             select: var("DESK_CTRL_SELECT"),
             open_settings: var("DESK_CTRL_SETTINGS").is_some(),
+            move_to: var("DESK_CTRL_MOVE_TO").and_then(|v| v.parse().ok()),
         }
     }
 

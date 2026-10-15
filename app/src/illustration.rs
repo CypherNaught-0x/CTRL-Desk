@@ -32,10 +32,13 @@ pub fn paint(ui: &Ui, rect: Rect, scene: &DeskScene, p: &Palette) {
     let u = dw / 540.0; // design unit; the desk is 540 units wide
     let top_y = floor_y - scene.height_mm * px_per_mm;
     if let Some(avoid) = scene.avoid {
-        // The plant reaches ~75 units above the tabletop at the left end.
+        // Decide from the highest position, not the current one, so the desk
+        // never jumps sideways while the height animates. The plant reaches
+        // ~75 units above the tabletop at the left end.
         let gap = 24.0;
         let left_edge = cx - dw / 2.0;
-        if top_y - 75.0 * u < avoid.bottom() && left_edge < avoid.right() + gap {
+        let highest_top = floor_y - scene.max_mm * px_per_mm;
+        if highest_top - 75.0 * u < avoid.bottom() && left_edge < avoid.right() + gap {
             // Leave room for the dimension label on the right.
             let max_cx = rect.right() - dw / 2.0 - 110.0 * u;
             cx = (cx + avoid.right() + gap - left_edge).min(max_cx.max(cx));
@@ -225,11 +228,19 @@ pub fn paint(ui: &Ui, rect: Rect, scene: &DeskScene, p: &Palette) {
             painter.line_segment([pos2(x - 6.0, y), pos2(x + 6.0, y)], s);
         }
         let text_pos = pos2(x + 10.0, (top_y + floor_y) / 2.0);
-        let galley = painter.layout_no_wrap(label.clone(), font(14.0, Weight::Regular), p.text);
-        // Put the label inside if it would be clipped on the right.
-        let pos = if text_pos.x + galley.size().x > rect.right() - 8.0 {
+        let format = egui::TextFormat {
+            font_id: font(14.0, Weight::Regular),
+            color: p.text,
+            ..Default::default()
+        };
+        let (job, trailing) = crate::widgets::tabular_job(&painter, label, &format);
+        let galley = painter.layout_job(job);
+        // Put the label inside if a label for the highest position would be
+        // clipped on the right (a fixed decision, so it never flips sides).
+        let widest = crate::widgets::tabular_width(&painter, "000.0 cm", &format);
+        let pos = if text_pos.x + widest > rect.right() - 8.0 {
             pos2(
-                x - 10.0 - galley.size().x,
+                x - 10.0 - galley.size().x - trailing,
                 text_pos.y - galley.size().y / 2.0,
             )
         } else {

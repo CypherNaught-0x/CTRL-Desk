@@ -436,3 +436,92 @@ pub fn table_icon(painter: &egui::Painter, center: Pos2, w: f32, color: Color32)
         painter.line_segment([pos2(x, top + w * 0.16), pos2(x, center.y + w * 0.3)], s);
     }
 }
+
+/// Lays out `text` with every digit centered in a cell as wide as the widest
+/// digit (like tabular figures), so changing numbers don't shift surrounding
+/// content. Returns the job and the padding after the last character, which
+/// belongs to its cell but is not part of the galley width.
+pub fn tabular_job(
+    painter: &egui::Painter,
+    text: &str,
+    format: &egui::TextFormat,
+) -> (egui::text::LayoutJob, f32) {
+    let width = |s: String| {
+        painter
+            .layout_no_wrap(s, format.font_id.clone(), format.color)
+            .size()
+            .x
+    };
+    let cell = ('0'..='9')
+        .map(|d| width(d.to_string()))
+        .fold(0.0, f32::max);
+    let mut job = egui::text::LayoutJob::default();
+    let mut pad = 0.0;
+    for ch in text.chars() {
+        let s = ch.to_string();
+        let half = if ch.is_ascii_digit() {
+            (cell - width(s.clone())) / 2.0
+        } else {
+            0.0
+        };
+        // One section per character: `LayoutJob::append` would merge equal
+        // sections, and characters shaped together get kerned (e.g. "0.0" is
+        // tighter than "1.1"), which makes the width vary again.
+        let start = job.text.len();
+        job.text.push_str(&s);
+        job.sections.push(egui::text::LayoutSection {
+            leading_space: pad + half,
+            byte_range: egui::text::ByteIndex(start)..egui::text::ByteIndex(job.text.len()),
+            format: format.clone(),
+        });
+        pad = half;
+    }
+    (job, pad)
+}
+
+/// Width `text` would occupy when laid out with [`tabular_job`].
+pub fn tabular_width(painter: &egui::Painter, text: &str, format: &egui::TextFormat) -> f32 {
+    let (job, pad) = tabular_job(painter, text, format);
+    painter.layout_job(job).size().x + pad
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Readings with the same number of digits must occupy the same width.
+    #[test]
+    fn tabular_numbers_have_stable_width() {
+        let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            let painter = ui.painter();
+            let format = egui::TextFormat {
+                font_id: font(88.0, Weight::Bold),
+                extra_letter_spacing: -88.0 * 0.03,
+                ..Default::default()
+            };
+            let widths: Vec<(String, f32)> = (600..1340)
+                .map(|tenths| {
+                    let text = format!("{:.1}", tenths as f32 / 10.0);
+                    let w = tabular_width(painter, &text, &format);
+                    (text, w)
+                })
+                .collect();
+            for len in [4, 5] {
+                let same: Vec<_> = widths.iter().filter(|(t, _)| t.len() == len).collect();
+                let (min, max) = same.iter().fold((f32::MAX, f32::MIN), |(a, b), (_, w)| {
+                    (a.min(*w), b.max(*w))
+                });
+                // Allow sub-pixel rounding of glyph positions.
+                assert!(
+                    max - min < 0.1,
+                    "{len}-char readings vary in width by {}",
+                    max - min
+                );
+            }
+        });
+        // Nothing renders in this test; drop the font atlas upload explicitly.
+        output.textures_delta.clear();
+    }
+}

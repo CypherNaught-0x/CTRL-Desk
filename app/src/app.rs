@@ -367,17 +367,13 @@ impl DeskApp {
             .map(|h| format!("{:.1}", h / 10.0))
             .unwrap_or_else(|| "—".into());
         let big = (rect.height() * 0.17).clamp(56.0, 88.0);
-        let mut job = LayoutJob::default();
-        job.append(
-            &number,
-            0.0,
-            TextFormat {
-                font_id: font(big, Weight::Bold),
-                color: p.text,
-                extra_letter_spacing: -big * 0.03,
-                ..Default::default()
-            },
-        );
+        let num_fmt = TextFormat {
+            font_id: font(big, Weight::Bold),
+            color: p.text,
+            extra_letter_spacing: -big * 0.03,
+            ..Default::default()
+        };
+        let (job, trailing) = widgets::tabular_job(ui.painter(), &number, &num_fmt);
         let num = ui.painter().layout_job(job);
         let unit =
             ui.painter()
@@ -385,12 +381,20 @@ impl DeskApp {
         // Align the unit on the number's baseline.
         let num_pos = pos2(left - 4.0, rect.top() + 56.0);
         let unit_pos = pos2(
-            num_pos.x + num.size().x + big * 0.08,
+            num_pos.x + num.size().x + trailing + big * 0.08,
             num_pos.y + baseline(&num) - baseline(&unit),
         );
+        // Keep the desk clear of the widest reading this desk can show, so the
+        // illustration doesn't shift as the digits change.
+        let widest = format!("{:.1}", self.max_mm().max(1000.0) / 10.0)
+            .replace(|c: char| c.is_ascii_digit(), "0");
+        let reserved = widgets::tabular_width(ui.painter(), &widest, &num_fmt);
         let text_block = Rect::from_min_max(
             pos2(left, rect.top() + 34.0),
-            pos2(unit_pos.x + unit.size().x, num_pos.y + num.size().y),
+            pos2(
+                num_pos.x + reserved + big * 0.08 + unit.size().x,
+                num_pos.y + num.size().y,
+            ),
         );
         let label = self.height_mm().map(|h| format!("{:.1} cm", h / 10.0));
         illustration::paint(
@@ -960,6 +964,12 @@ impl eframe::App for DeskApp {
         self.paint_toast(ui, &p);
         if self.screen == Screen::Onboarding {
             self.autopilot();
+        }
+        if self.sample.is_some()
+            && self.connected()
+            && let Some(mm) = self.dev.move_to.take()
+        {
+            self.move_to_mm(mm, format!("{:.1} cm", mm / 10.0));
         }
         self.dev.tick(&ctx);
     }
