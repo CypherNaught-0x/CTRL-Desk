@@ -7,6 +7,7 @@
 //! - `DESK_CTRL_SELECT=<device id or name>` picks that device on the Find step.
 //! - `DESK_CTRL_SETTINGS=1` opens the settings dialog on start.
 //! - `DESK_CTRL_MOVE_TO=<mm>` moves the desk there once connected.
+//! - `DESK_CTRL_EXPORT_ICONS=<dir>` writes the icons as PNGs and exits.
 
 use std::path::PathBuf;
 
@@ -45,6 +46,11 @@ impl DevTools {
         }
     }
 
+    /// Whether this is an automated screenshot run.
+    pub fn capturing(&self) -> bool {
+        self.screenshot.is_some()
+    }
+
     pub fn tick(&mut self, ctx: &egui::Context) {
         let Some((path, delay)) = &self.screenshot else {
             return;
@@ -71,4 +77,27 @@ impl DevTools {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
+}
+
+/// Writes the app icon at several sizes plus both tray glyph variants as PNGs,
+/// for packaging (`DESK_CTRL_EXPORT_ICONS=<dir>`).
+pub fn export_icons(dir: &std::path::Path) -> std::io::Result<()> {
+    use crate::icon::{GLYPH_DARK, GLYPH_LIGHT, Style, app_style, render};
+    std::fs::create_dir_all(dir)?;
+    let save = |name: String, size: u32, style: &Style| {
+        image::save_buffer(
+            dir.join(name),
+            &render(size, style),
+            size,
+            size,
+            image::ColorType::Rgba8,
+        )
+        .map_err(std::io::Error::other)
+    };
+    for size in [16, 32, 64, 128, 256, 512, 1024] {
+        save(format!("icon-{size}.png"), size, &app_style())?;
+    }
+    save("tray-light.png".into(), 64, &Style::Glyph(GLYPH_LIGHT))?;
+    save("tray-dark.png".into(), 64, &Style::Glyph(GLYPH_DARK))?;
+    Ok(())
 }

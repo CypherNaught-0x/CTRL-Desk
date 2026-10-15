@@ -276,6 +276,28 @@ pub fn signal_bars(ui: &Ui, rect: Rect, rssi: Option<i16>, on: Color32, off: Col
     }
 }
 
+/// An on/off switch followed by a clickable label. Returns true on change.
+pub fn toggle(ui: &mut Ui, on: &mut bool, label: &str, p: &Palette) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        let (rect, resp) = ui.allocate_exact_size(vec2(40.0, 22.0), Sense::click());
+        let text = ui.add(egui::Label::new(label).sense(Sense::click()));
+        if resp.clicked() || text.clicked() {
+            *on = !*on;
+            changed = true;
+        }
+        let t = ui.ctx().animate_bool(resp.id, *on);
+        let track = crate::theme::mix(alpha(p.muted, 0.35), p.primary, t);
+        ui.painter().rect_filled(rect, 11, track);
+        let knob_x = rect.left() + 11.0 + t * (rect.width() - 22.0);
+        let knob = if t > 0.5 { p.on_primary } else { p.card };
+        ui.painter()
+            .circle_filled(pos2(knob_x, rect.center().y), 8.0, knob);
+        resp.on_hover_cursor(CursorIcon::PointingHand);
+    });
+    changed
+}
+
 /// A segmented control. Returns the newly selected index if it changed.
 pub fn segmented(
     ui: &mut Ui,

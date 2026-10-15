@@ -1,4 +1,6 @@
-# Desk Control
+<img src="docs/screenshots/icon.png" alt="" width="96" align="right">
+
+# CTRL Desk
 
 A desktop app and Rust library for Linak DPG standing desks over Bluetooth LE.
 This covers Linak-based white-label desks such as "CTRL DESK", and probably the
@@ -21,6 +23,9 @@ IKEA IDÅSEN too.
 - **Light, dark and system themes**, with a separately configurable primary
   color for each.
 - **Automatic reconnect** when the desk goes out of range or is power-cycled.
+- **System tray.** Minimize to the tray, then show or hide the window with a
+  click. The tray menu shows the live height and has your favourites, Stop
+  and Quit. The tray glyph follows the taskbar's light or dark theme.
 - **Demo mode** with a simulated desk, for trying the app without hardware.
 
 ### Onboarding
@@ -36,8 +41,8 @@ Download the package for your platform from the **Releases** page:
 | Platform | Package | Notes |
 | --- | --- | --- |
 | Windows 10/11 (x64) | `desk-ctrl-<version>-x86_64-pc-windows-msvc.zip` | Unzip and run `desk-ctrl.exe`. |
-| macOS 11+ (Apple Silicon / Intel) | `desk-ctrl-<version>-<arch>-apple-darwin.zip` | Contains `Desk Control.app`. The app is not notarized: the first time, right-click it and choose **Open**. Allow Bluetooth access when asked. |
-| Linux (x64) | `desk-ctrl-<version>-x86_64-unknown-linux-gnu.tar.gz` | Needs BlueZ running (`bluetoothd`). Your user must be allowed to use Bluetooth over D-Bus (the default on most desktop distributions). |
+| macOS 11+ (Apple Silicon / Intel) | `desk-ctrl-<version>-<arch>-apple-darwin.zip` | Contains `CTRL Desk.app`. The app is not notarized: the first time, right-click it and choose **Open**. Allow Bluetooth access when asked. |
+| Linux (x64) | `desk-ctrl-<version>-x86_64-unknown-linux-gnu.tar.gz` | Needs BlueZ running (`bluetoothd`). Your user must be allowed to use Bluetooth over D-Bus (the default on most desktop distributions). Includes a `.desktop` file and icon. The tray uses StatusNotifierItem: KDE supports it out of the box, GNOME needs the AppIndicator extension. |
 
 Try it without a desk:
 
@@ -56,6 +61,10 @@ Demo mode keeps its settings separate from the real configuration.
 - **Windows: the desk is "paired" in Bluetooth settings.** Pairing isn't
   needed. If connecting fails, remove the desk under *Settings → Bluetooth &
   devices* and let the app connect directly.
+
+By default, minimizing hides the window in the tray, and closing the window
+quits. Both can be changed under **Settings → Tray**. Use **Quit** in the tray
+menu to exit while "keep running in the tray" is on.
 
 Settings are stored in `config.json` in the platform config directory:
 `%APPDATA%\desk-ctrl` on Windows, `~/Library/Application Support/desk-ctrl` on
@@ -133,6 +142,7 @@ The app has a few environment variables for development and automation:
 | `DESK_CTRL_STEP=find\|connect\|calibrate\|personalise\|done` | Advance onboarding to that step automatically. |
 | `DESK_CTRL_SELECT=<id or name>` | The device to pick on the Find step. |
 | `DESK_CTRL_SETTINGS=1` | Open Settings on start. |
+| `DESK_CTRL_EXPORT_ICONS=<dir>` | Write the app icon (16–1024 px) and both tray glyphs as PNGs, then exit. |
 | `DESK_CTRL_MOVE_TO=<mm>` | Move the desk to this height once connected (handy for capturing motion). |
 
 ## Releases
@@ -161,4 +171,6 @@ The protocol details come from
 which is included as a submodule for reference. The bundled
 [Inter](https://github.com/rsms/inter) font is licensed under the SIL Open Font
 License 1.1 ([`app/assets/fonts/OFL.txt`](app/assets/fonts/OFL.txt)). Icons come
-from [Phosphor](https://phosphoricons.com) via `egui-phosphor`.
+from [Phosphor](https://phosphoricons.com) via `egui-phosphor`. The app icon is
+drawn in code ([`app/src/icon.rs`](app/src/icon.rs)) and embedded into the
+Windows executable at build time.

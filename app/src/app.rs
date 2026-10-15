@@ -10,6 +10,7 @@ use crate::config::{self, Config, FavIcon, Favourite, ThemeChoice};
 use crate::illustration::{self, DeskScene};
 use crate::onboarding::Onboarding;
 use crate::theme::{self, Palette, Weight, alpha, font};
+use crate::tray::TrayAction;
 use crate::widgets::{self, Button, card, hold_button, icon_button, link_button};
 use crate::worker::{Command, Direction, Event, FoundDevice, Worker};
 
@@ -67,6 +68,10 @@ pub struct DeskApp {
     toast: Option<(String, f64)>,
     applied_palette: Option<Palette>,
     pub dev: crate::devtools::DevTools,
+    tray: Option<crate::tray::Tray>,
+    window_visible: bool,
+    /// Set by "Quit" so closing isn't redirected to the tray.
+    quitting: bool,
 }
 
 impl DeskApp {
@@ -98,13 +103,109 @@ impl DeskApp {
             toast: None,
             applied_palette: None,
             dev: crate::devtools::DevTools::from_env(),
+            tray: None,
+            window_visible: true,
+            quitting: false,
         }
         .with_dev_settings()
+        .with_tray(&cc.egui_ctx)
     }
 
     fn with_dev_settings(mut self) -> Self {
         self.settings_open = self.dev.open_settings;
         self
+    }
+
+    fn with_tray(mut self, ctx: &egui::Context) -> Self {
+        // Automated screenshot runs don't need (or want) a tray icon.
+        if !self.dev.capturing() {
+            self.tray = crate::tray::Tray::new(ctx);
+        }
+        self
+    }
+
+    fn show_window(&mut self, ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        self.window_visible = true;
+    }
+
+    fn hide_window(&mut self, ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        self.window_visible = false;
+    }
+
+    /// Short status for the tray, e.g. "104.5 cm · Moving".
+    fn tray_status(&self) -> String {
+        match (&self.conn, self.height_mm()) {
+            (Conn::Connected, Some(h)) => {
+                let moving =
+                    self.motion != Motion::Idle || self.sample.is_some_and(|s| s.speed.0 != 0);
+                format!(
+                    "{:.1} cm{}",
+                    h / 10.0,
+                    if moving { " · Moving" } else { "" }
+                )
+            }
+            (Conn::Connecting, _) => "Connecting…".into(),
+            _ if self.cfg.desk.is_none() => "Not set up yet".into(),
+            _ => "Desk offline".into(),
+        }
+    }
+
+    /// Tray, minimize-to-tray and close-to-tray handling. Runs even while the
+    /// window is hidden.
+    fn window_and_tray(&mut self, ctx: &egui::Context) {
+        if self.tray.is_none() {
+            return;
+        }
+        let state = crate::tray::TrayState {
+            window_visible: self.window_visible,
+            status: self.tray_status(),
+            favourites: self
+                .cfg
+                .favourites
+                .iter()
+                .map(|f| format!("{}  ·  {:.1} cm", f.name, f.height_mm / 10.0))
+                .collect(),
+            can_move: self.conn == Conn::Connected,
+        };
+        let Some(tray) = &mut self.tray else { return };
+        tray.sync(ctx, state);
+        for action in tray.poll() {
+            match action {
+                TrayAction::ToggleWindow if self.window_visible => self.hide_window(ctx),
+                TrayAction::ToggleWindow => self.show_window(ctx),
+                TrayAction::MoveTo(i) => {
+                    if let Some(f) = self.cfg.favourites.get(i).cloned() {
+                        self.move_to_mm(f.height_mm, f.name);
+                    }
+                }
+                TrayAction::Stop => {
+                    self.worker.send(Command::Stop);
+                    self.motion = Motion::Idle;
+                }
+                TrayAction::Quit => {
+                    self.quitting = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+        }
+
+        let (minimized, close_requested) = ctx.input(|i| {
+            (
+                i.viewport().minimized == Some(true),
+                i.viewport().close_requested(),
+            )
+        });
+        if self.window_visible && minimized && self.cfg.minimize_to_tray {
+            self.hide_window(ctx);
+        }
+        if close_requested && !self.quitting && self.cfg.close_to_tray {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.hide_window(ctx);
+        }
     }
 
     // ---- Height helpers -------------------------------------------------
@@ -815,6 +916,20 @@ impl DeskApp {
             changed |= widgets::color_choice(ui, &mut self.cfg.primary_dark, &DARK_PRESETS, p);
 
             ui.add_space(16.0);
+            section(ui, "Tray", p);
+            // Screenshot runs skip the tray but should still show the options.
+            if self.tray.is_some() || self.dev.capturing() {
+                changed |= widgets::toggle(ui, &mut self.cfg.minimize_to_tray, "Minimize to the tray", p);
+                changed |= widgets::toggle(
+                    ui,
+                    &mut self.cfg.close_to_tray,
+                    "Keep running in the tray when the window is closed",
+                    p,
+                );
+            } else {
+                ui.label(egui::RichText::new("No system tray is available on this desktop.").color(p.muted));
+            }
+            ui.add_space(16.0);
             section(ui, "Desk", p);
             if let Some(desk) = &self.cfg.desk {
                 let model = self.info.as_ref().map(|i| format!("  ·  {} {}", i.manufacturer, i.model)).unwrap_or_default();
@@ -944,10 +1059,15 @@ pub fn section(ui: &mut Ui, title: &str, p: &Palette) {
 }
 
 impl eframe::App for DeskApp {
+    /// Also runs while the window is hidden in the tray.
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let now = ctx.input(|i| i.time);
+        self.process_events(now);
+        self.window_and_tray(ctx);
+    }
+
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        let now = ui.input(|i| i.time);
-        self.process_events(now);
 
         let p = self.palette(&ctx);
         if self.applied_palette != Some(p) {

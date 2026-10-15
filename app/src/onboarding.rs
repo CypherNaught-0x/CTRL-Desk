@@ -338,7 +338,7 @@ impl DeskApp {
         ui.ctx().request_repaint();
 
         ui.allocate_space(vec2(r.width(), art.height() + 26.0));
-        heading(ui, "Welcome to Desk Control", p);
+        heading(ui, "Welcome to CTRL Desk", p);
         body(
             ui,
             "Let's connect to your standing desk. You'll find it over Bluetooth, check its height, and pick your favourite positions. It takes about a minute.",

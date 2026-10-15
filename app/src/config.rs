@@ -17,6 +17,10 @@ pub struct Config {
     pub primary_light: [u8; 3],
     pub primary_dark: [u8; 3],
     pub favourites: Vec<Favourite>,
+    /// Hide the window in the system tray when it is minimized.
+    pub minimize_to_tray: bool,
+    /// Keep running in the tray when the window is closed.
+    pub close_to_tray: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,6 +110,8 @@ impl Default for Config {
                     icon: FavIcon::Laptop,
                 },
             ],
+            minimize_to_tray: true,
+            close_to_tray: false,
         }
     }
 }

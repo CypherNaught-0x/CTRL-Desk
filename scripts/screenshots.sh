@@ -43,4 +43,8 @@ shot onboarding-find '{"theme":"Light"}' DESK_CTRL_STEP=find
 shot onboarding-connect '{"theme":"Light"}' DESK_CTRL_STEP=connect DESK_CTRL_SELECT="CTRL DESK"
 shot onboarding-calibrate '{"theme":"Light"}' DESK_CTRL_STEP=calibrate DESK_CTRL_SELECT="CTRL DESK"
 shot onboarding-personalise '{"theme":"Dark"}' DESK_CTRL_STEP=personalise DESK_CTRL_SELECT="CTRL DESK"
+# The app icon, rendered by the app itself.
+DESK_CTRL_EXPORT_ICONS="$tmp/icons" "$bin"
+cp "$tmp/icons/icon-256.png" "$out/icon.png"
+echo "  icon.png"
 echo "Done."
