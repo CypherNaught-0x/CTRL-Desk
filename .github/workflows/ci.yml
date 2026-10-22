@@ -52,7 +52,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: sudo apt-get update && sudo apt-get install -y $LINUX_DEPS xvfb mesa-vulkan-drivers libegl1
+      - run: sudo apt-get update && sudo apt-get install -y $LINUX_DEPS libxkbcommon-x11-0 xvfb mesa-vulkan-drivers libegl1
       - uses: Swatinem/rust-cache@v2
       - run: xvfb-run -a -s "-screen 0 1920x1200x24" scripts/screenshots.sh screenshots
       - uses: actions/upload-artifact@v4
