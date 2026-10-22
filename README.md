@@ -8,9 +8,9 @@ IKEA IDÅSEN too.
 
 ![Dashboard, light theme](docs/screenshots/dashboard-light.png)
 
-| Dark theme | Settings with a custom primary color |
-| --- | --- |
-| ![Dashboard, dark theme](docs/screenshots/dashboard-dark.png) | ![Settings](docs/screenshots/settings.png) |
+| Dark theme | Settings with a custom primary color | Reminder to stand up |
+| --- | --- | --- |
+| ![Dashboard, dark theme](docs/screenshots/dashboard-dark.png) | ![Settings](docs/screenshots/settings.png) | ![Reminder](docs/screenshots/reminder.png) |
 
 ## Features
 
@@ -23,6 +23,21 @@ IKEA IDÅSEN too.
 - **Light, dark and system themes**, with a separately configurable primary
   color for each.
 - **Automatic reconnect** when the desk goes out of range or is power-cycled.
+- **Sitting and standing time.** The **Today** card shows how long you've sat
+  and stood today, how long you've been in your current position, and a chart
+  of the last 7 days. Heights from the **Count as standing from** setting up
+  count as standing. By default that's halfway between your Sitting and
+  Standing favourites. Time only counts while the desk is connected and not
+  moving.
+- **Reminders to change position** (optional). After sitting for a set time
+  (45 min by default), CTRL Desk brings its window to the front and offers to
+  move the desk to your standing height. Reminders to sit down again after
+  standing work the same way. You can snooze or dismiss them. Turn them on
+  under **Settings → Activity**.
+- **Update check.** CTRL Desk checks GitHub for a new release on start and once
+  a day; turn this off under **Settings → Updates**. When CTRL Desk was installed
+  with the MSI installer, **Update to …** downloads and installs the new
+  version, then restarts the app. Otherwise it opens the release page.
 - **System tray.** Minimize to the tray, then show or hide the window with a
   click. The tray menu shows the live height and has your favourites, Stop
   and Quit. The tray glyph follows the taskbar's light or dark theme.
@@ -40,7 +55,8 @@ Download the package for your platform from the **Releases** page:
 
 | Platform | Package | Notes |
 | --- | --- | --- |
-| Windows 10/11 (x64) | `desk-ctrl-<version>-x86_64-pc-windows-msvc.zip` | Unzip and run `desk-ctrl.exe`. |
+| Windows 10/11 (x64) | `desk-ctrl-<version>-x86_64-pc-windows-msvc.msi` | Recommended. Installs for the current user (no administrator rights needed), adds a Start menu entry and supports in-app updates. Uninstall under *Settings → Apps*. |
+| Windows 10/11 (x64), portable | `desk-ctrl-<version>-x86_64-pc-windows-msvc.zip` | Unzip and run `desk-ctrl.exe`. |
 | macOS 11+ (Apple Silicon / Intel) | `desk-ctrl-<version>-<arch>-apple-darwin.zip` | Contains `CTRL Desk.app`. The app is not notarized: the first time, right-click it and choose **Open**. Allow Bluetooth access when asked. |
 | Linux (x64) | `desk-ctrl-<version>-x86_64-unknown-linux-gnu.tar.gz` | Needs BlueZ running (`bluetoothd`). Your user must be allowed to use Bluetooth over D-Bus (the default on most desktop distributions). Includes a `.desktop` file and icon. The tray uses StatusNotifierItem: KDE supports it out of the box, GNOME needs the AppIndicator extension. |
 
@@ -66,7 +82,8 @@ By default, minimizing hides the window in the tray, and closing the window
 quits. Both can be changed under **Settings → Tray**. Use **Quit** in the tray
 menu to exit while "keep running in the tray" is on.
 
-Settings are stored in `config.json` in the platform config directory:
+Settings are stored in `config.json`, and the sitting/standing history in
+`activity.json`, in the platform config directory:
 `%APPDATA%\desk-ctrl` on Windows, `~/Library/Application Support/desk-ctrl` on
 macOS, and `~/.config/desk-ctrl` on Linux.
 
@@ -142,8 +159,9 @@ The app has a few environment variables for development and automation:
 | `DESK_CTRL_STEP=find\|connect\|calibrate\|personalise\|done` | Advance onboarding to that step automatically. |
 | `DESK_CTRL_SELECT=<id or name>` | The device to pick on the Find step. |
 | `DESK_CTRL_SETTINGS=1` | Open Settings on start. |
-| `DESK_CTRL_EXPORT_ICONS=<dir>` | Write the app icon (16–1024 px) and both tray glyphs as PNGs, then exit. |
+| `DESK_CTRL_EXPORT_ICONS=<dir>` | Write the app icon (16–1024 px), both tray glyphs as PNGs and `icon.ico`, then exit. |
 | `DESK_CTRL_MOVE_TO=<mm>` | Move the desk to this height once connected (handy for capturing motion). |
+| `DESK_CTRL_REMINDER=stand\|sit` | Show the reminder to stand up or sit down on start. |
 
 ## Releases
 
@@ -153,16 +171,24 @@ on every push and pull request:
 - tests and release builds on Linux, Windows and macOS
 - the screenshot run on Linux
 
-To publish a release, push a version tag:
+To publish a release, set `version` in [`app/Cargo.toml`](app/Cargo.toml)
+(the in-app update check compares against it), commit, and push a matching tag:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
-[`.github/workflows/release.yml`](.github/workflows/release.yml) runs CI,
-builds and packages Windows, Linux and macOS (Apple Silicon and Intel), and
-attaches the packages to a GitHub release.
+[`.github/workflows/release.yml`](.github/workflows/release.yml) checks that the
+tag matches the app version, then runs CI. It builds and packages Windows (zip
+and MSI), Linux and macOS (Apple Silicon and Intel), and attaches the packages
+to a GitHub release.
+
+The MSI is built with the [WiX Toolset](https://wixtoolset.org) v5 from
+[`app/wix/main.wxs`](app/wix/main.wxs). To build it locally, install WiX with
+`dotnet tool install --global wix --version 5.0.2`, then run
+`scripts/package.sh x86_64-pc-windows-msvc <version>`. Keep the `UpgradeCode`
+and component GUIDs unchanged, so new versions upgrade old installs in place.
 
 ## Credits
 

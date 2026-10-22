@@ -38,6 +38,7 @@ echo "Writing screenshots to $out"
 shot dashboard-light "{\"theme\":\"Light\",$desk}"
 shot dashboard-dark "{\"theme\":\"Dark\",$desk}"
 shot settings "{\"theme\":\"Light\",\"primary_light\":[45,91,138],$desk}" DESK_CTRL_SETTINGS=1
+shot reminder "{\"theme\":\"Light\",$desk}" DESK_CTRL_REMINDER=stand
 shot onboarding-welcome '{"theme":"Light"}'
 shot onboarding-find '{"theme":"Light"}' DESK_CTRL_STEP=find
 shot onboarding-connect '{"theme":"Light"}' DESK_CTRL_STEP=connect DESK_CTRL_SELECT="CTRL DESK"

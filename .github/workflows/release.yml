@@ -35,8 +35,23 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      # The in-app update check compares against the crate version.
+      - name: Check the tag matches the app version
+        shell: bash
+        run: |
+          version="$(cargo pkgid -p desk_app | sed 's/.*[@#]//')"
+          if [[ "v$version" != "$GITHUB_REF_NAME" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match the desk_app version $version"
+            exit 1
+          fi
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y $LINUX_DEPS
+      # WiX builds the MSI installer.
+      - if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          echo "$USERPROFILE/.dotnet/tools" >> "$GITHUB_PATH"
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}

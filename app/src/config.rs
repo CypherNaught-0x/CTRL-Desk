@@ -21,6 +21,37 @@ pub struct Config {
     pub minimize_to_tray: bool,
     /// Keep running in the tray when the window is closed.
     pub close_to_tray: bool,
+    /// Heights at or above this count as standing. `None` picks a default from
+    /// the favourites, see [`crate::activity::standing_from_mm`].
+    pub standing_from_mm: Option<f32>,
+    pub reminders: Reminders,
+    /// Look for a new release on start and once a day.
+    pub check_updates: bool,
+}
+
+/// Prompts to change position after sitting or standing for a while.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Reminders {
+    /// Suggest standing up after sitting for `after_sitting_min`.
+    pub stand_up: bool,
+    pub after_sitting_min: u32,
+    /// Suggest sitting down after standing for `after_standing_min`.
+    pub sit_down: bool,
+    pub after_standing_min: u32,
+    pub snooze_min: u32,
+}
+
+impl Default for Reminders {
+    fn default() -> Self {
+        Self {
+            stand_up: false,
+            after_sitting_min: 45,
+            sit_down: false,
+            after_standing_min: 20,
+            snooze_min: 10,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,6 +143,9 @@ impl Default for Config {
             ],
             minimize_to_tray: true,
             close_to_tray: false,
+            standing_from_mm: None,
+            reminders: Reminders::default(),
+            check_updates: true,
         }
     }
 }
@@ -137,6 +171,18 @@ impl Config {
             "config.json"
         };
         Some(dirs::config_dir()?.join("desk-ctrl").join(file))
+    }
+
+    /// Path of another data file stored next to the config, e.g. the activity
+    /// history.
+    pub fn sibling(name: &str) -> Option<PathBuf> {
+        let path = Self::path()?;
+        let stem = path.file_stem()?.to_string_lossy();
+        let file = match stem.strip_prefix("config") {
+            Some(rest) => format!("{name}{rest}.json"),
+            None => format!("{stem}.{name}.json"),
+        };
+        Some(path.with_file_name(file))
     }
 
     pub fn load() -> Self {

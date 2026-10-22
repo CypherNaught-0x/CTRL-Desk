@@ -4,7 +4,7 @@
 #   cargo build --release --locked -p desk_app --target <target>
 #   scripts/package.sh <target> <version> [out-dir]      (default out-dir: dist)
 #
-# Produces a .zip (Windows), a .app bundle in a .zip (macOS) or a .tar.gz (Linux).
+# Produces a .zip and .msi (Windows), a .app bundle in a .zip (macOS) or a .tar.gz (Linux).
 set -euo pipefail
 
 target="$1"
@@ -38,6 +38,22 @@ case "$target" in
     docs "$stage/$name"
     (cd "$stage" && 7z a -tzip -bso0 "$out/$name.zip" "$name")
     echo "$out/$name.zip"
+    # MSI installer, if the WiX Toolset (v5) is installed:
+    #   dotnet tool install --global wix --version 5.0.2
+    if command -v wix >/dev/null; then
+        icons "$stage/png" "$bin_dir/desk-ctrl.exe"
+        win() { cygpath -w "$1" 2>/dev/null || echo "$1"; }
+        # MSI versions are numeric only: drop any pre-release suffix.
+        wix build "$(win "$root/app/wix/main.wxs")" -arch x64 \
+            -d Version="${version%%-*}" \
+            -d Exe="$(win "$bin_dir/desk-ctrl.exe")" \
+            -d Icon="$(win "$stage/png/icon.ico")" \
+            -d Docs="$(win "$stage/$name")" \
+            -pdbtype none -o "$(win "$out/$name.msi")"
+        echo "$out/$name.msi"
+    else
+        echo "wix not found, skipping the MSI installer" >&2
+    fi
     ;;
 *apple-darwin*)
     app="$stage/CTRL Desk.app"

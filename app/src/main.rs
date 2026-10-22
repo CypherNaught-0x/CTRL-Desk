@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod activity;
 mod app;
 mod config;
 mod demo;
@@ -9,6 +10,7 @@ mod illustration;
 mod onboarding;
 mod theme;
 mod tray;
+mod update;
 mod widgets;
 mod worker;
 
@@ -32,7 +34,7 @@ fn main() -> eframe::Result {
                 width: 256,
                 height: 256,
             }))
-            .with_inner_size([1180.0, 800.0])
+            .with_inner_size([1180.0, 960.0])
             .with_min_inner_size([900.0, 640.0]),
         ..Default::default()
     };

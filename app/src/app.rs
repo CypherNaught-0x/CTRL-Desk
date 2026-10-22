@@ -5,12 +5,15 @@ use egui::{
 };
 use egui_phosphor::regular as icon;
 use linak_desk::{DeskInfo, Height, HeightSpeed};
+use std::time::{Duration, Instant};
 
+use crate::activity::{self, History, Posture, Tracker};
 use crate::config::{self, Config, FavIcon, Favourite, ThemeChoice};
 use crate::illustration::{self, DeskScene};
 use crate::onboarding::Onboarding;
 use crate::theme::{self, Palette, Weight, alpha, font};
 use crate::tray::TrayAction;
+use crate::update::{self, Updater};
 use crate::widgets::{self, Button, card, hold_button, icon_button, link_button};
 use crate::worker::{Command, Direction, Event, FoundDevice, Worker};
 
@@ -72,12 +75,22 @@ pub struct DeskApp {
     window_visible: bool,
     /// Set by "Quit" so closing isn't redirected to the tray.
     quitting: bool,
+    tracker: Tracker,
+    /// The posture held too long, while its reminder is shown.
+    reminder: Option<Posture>,
+    updater: Updater,
 }
 
 impl DeskApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::install_fonts(&cc.egui_ctx);
         let cfg = Config::load();
+        let dev = crate::devtools::DevTools::from_env();
+        let mut history = History::load();
+        if config::is_demo() && history.days.is_empty() {
+            history = History::sample(chrono::Local::now().date_naive());
+        }
+        let tracker = Tracker::new(history, !dev.capturing());
         let worker = Worker::spawn(cc.egui_ctx.clone(), crate::config::is_demo());
         let screen = match &cfg.desk {
             Some(desk) => {
@@ -102,10 +115,13 @@ impl DeskApp {
             settings_open: false,
             toast: None,
             applied_palette: None,
-            dev: crate::devtools::DevTools::from_env(),
+            reminder: dev.reminder,
+            dev,
             tray: None,
             window_visible: true,
             quitting: false,
+            tracker,
+            updater: Updater::new(cc.egui_ctx.clone()),
         }
         .with_dev_settings()
         .with_tray(&cc.egui_ctx)
@@ -140,8 +156,7 @@ impl DeskApp {
     fn tray_status(&self) -> String {
         match (&self.conn, self.height_mm()) {
             (Conn::Connected, Some(h)) => {
-                let moving =
-                    self.motion != Motion::Idle || self.sample.is_some_and(|s| s.speed.0 != 0);
+                let moving = self.moving();
                 format!(
                     "{:.1} cm{}",
                     h / 10.0,
@@ -205,6 +220,64 @@ impl DeskApp {
         if close_requested && !self.quitting && self.cfg.close_to_tray {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.hide_window(ctx);
+        }
+    }
+
+    // ---- Activity and updates ------------------------------------------
+
+    pub fn standing_from_mm(&self) -> f32 {
+        activity::standing_from_mm(&self.cfg, self.base_mm(), self.max_mm())
+    }
+
+    fn moving(&self) -> bool {
+        self.motion != Motion::Idle || self.sample.is_some_and(|s| s.speed.0 != 0)
+    }
+
+    /// Counts time per posture and raises reminders. Runs while hidden too.
+    fn track(&mut self, ctx: &egui::Context) {
+        let now = Instant::now();
+        let tracking = self.connected() && self.screen == Screen::Main && !self.moving();
+        let posture = match (tracking, self.height_mm()) {
+            (true, Some(h)) => Some(activity::classify(h, self.standing_from_mm())),
+            _ => None,
+        };
+        self.tracker
+            .tick(now, chrono::Local::now().date_naive(), posture);
+        if posture.is_some() {
+            ctx.request_repaint_after(Duration::from_secs(1));
+        }
+        // Screenshot runs show a fixed reminder instead.
+        if self.dev.capturing() {
+            return;
+        }
+
+        // The user changed position on their own.
+        if let Some(shown) = self.reminder
+            && self.tracker.current(now).is_some_and(|(p, _)| p != shown)
+        {
+            self.reminder = None;
+        }
+        if self.reminder.is_none()
+            && let Some(p) = self.tracker.due(now, &self.cfg.reminders)
+        {
+            self.reminder = Some(p);
+            if !self.window_visible {
+                self.show_window(ctx);
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
+                egui::UserAttentionType::Informational,
+            ));
+        }
+    }
+
+    fn updates(&mut self, ctx: &egui::Context) {
+        if self.dev.capturing() {
+            return;
+        }
+        self.updater.tick(self.cfg.check_updates);
+        if self.updater.status() == update::Status::Installing && !self.quitting {
+            self.quitting = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
 
@@ -348,8 +421,9 @@ impl DeskApp {
         let rows = n.div_ceil(3).max(1) as f32;
         let item_h = 158.0;
         let fav_h = 74.0 + rows * item_h + (rows - 1.0) * 14.0 + 22.0;
-        let main_h = (body.height() - fav_h - 14.0).max(400.0);
-        let total_h = main_h + 14.0 + fav_h;
+        let act_h = 150.0;
+        let main_h = (body.height() - act_h - fav_h - 28.0).max(400.0);
+        let total_h = main_h + 14.0 + act_h + 14.0 + fav_h;
 
         ui.scope_builder(UiBuilder::new().max_rect(body), |ui| {
             egui::ScrollArea::vertical()
@@ -363,12 +437,17 @@ impl DeskApp {
                         pos2(hero.right() + 14.0, r.top()),
                         pos2(r.right(), r.top() + main_h),
                     );
-                    let favs = Rect::from_min_size(
+                    let act = Rect::from_min_size(
                         pos2(r.left(), hero.bottom() + 14.0),
+                        vec2(r.width(), act_h),
+                    );
+                    let favs = Rect::from_min_size(
+                        pos2(r.left(), act.bottom() + 14.0),
                         vec2(r.width(), fav_h),
                     );
                     self.hero(ui, hero, p);
                     self.adjust_card(ui, adjust, p);
+                    self.activity_card(ui, act, p);
                     self.favourites(ui, favs, item_h, p);
                 });
         });
@@ -441,6 +520,367 @@ impl DeskApp {
         };
         if !tip.is_empty() {
             status.on_hover_text(tip);
+        }
+
+        let anchor = pos2(dot_c.x - 30.0, cy);
+        match self.updater.status() {
+            update::Status::Available(release) => {
+                let resp = link_button(
+                    ui,
+                    anchor,
+                    icon::ARROW_CIRCLE_UP,
+                    &format!("Update to {}", release.version),
+                    16.0,
+                    p.text,
+                    Id::new("update"),
+                );
+                let tip = if Updater::can_install(&release) {
+                    "Download and install the update. CTRL Desk restarts when done."
+                } else {
+                    "Open the release page to download the update"
+                };
+                if resp.on_hover_text(tip).clicked() {
+                    self.updater.install(release);
+                }
+            }
+            update::Status::Downloading(_) => {
+                let galley = ui.painter().layout_no_wrap(
+                    "Downloading update…".into(),
+                    font(16.0, Weight::Medium),
+                    p.muted,
+                );
+                let pos = pos2(anchor.x - galley.size().x, cy - galley.size().y / 2.0);
+                widgets::spinner(ui, pos2(pos.x - 14.0, cy), 6.0, p.muted);
+                ui.painter().galley(pos, galley, p.muted);
+            }
+            _ => {}
+        }
+    }
+
+    fn activity_card(&mut self, ui: &mut Ui, rect: Rect, p: &Palette) {
+        card(ui, rect, p);
+        let today = chrono::Local::now().date_naive();
+        let day = self.tracker.history.day(today);
+        let painter = ui.painter();
+        let left = rect.left() + 28.0;
+        painter.text(
+            pos2(left, rect.top() + 40.0),
+            Align2::LEFT_CENTER,
+            "Today",
+            font(26.0, Weight::SemiBold),
+            p.text,
+        );
+        let sit_color = theme::mix(p.card, p.primary, 0.35);
+        let stand_color = p.primary;
+
+        // What the desk is doing right now, next to the title.
+        let now_text = match self.tracker.current(Instant::now()) {
+            Some((posture, held)) => format!(
+                "{} for {}",
+                match posture {
+                    Posture::Sitting => "Sitting",
+                    Posture::Standing => "Standing",
+                },
+                activity::format_duration(held.as_secs_f64())
+            ),
+            None if self.connected() && self.moving() => "Moving".into(),
+            None => "Paused while the desk is offline".into(),
+        };
+        painter.text(
+            pos2(left + 92.0, rect.top() + 41.0),
+            Align2::LEFT_CENTER,
+            format!("·  {now_text}"),
+            font(16.0, Weight::Regular),
+            p.muted,
+        );
+
+        // Totals for today.
+        let total = day.sitting_s + day.standing_s;
+        let share = if total >= 60.0 {
+            format!("{:.0}%", day.standing_s / total * 100.0)
+        } else {
+            "—".into()
+        };
+        let stats_y = rect.top() + 80.0;
+        let mut x = left;
+        for (label, value, color) in [
+            (
+                "Sitting",
+                activity::format_duration(day.sitting_s),
+                Some(sit_color),
+            ),
+            (
+                "Standing",
+                activity::format_duration(day.standing_s),
+                Some(stand_color),
+            ),
+            ("Standing share", share, None),
+        ] {
+            let mut text_x = x;
+            if let Some(color) = color {
+                painter.rect_filled(
+                    Rect::from_center_size(pos2(x + 5.0, stats_y + 9.0), vec2(10.0, 10.0)),
+                    2,
+                    color,
+                );
+                text_x += 18.0;
+            }
+            painter.text(
+                pos2(text_x, stats_y),
+                Align2::LEFT_TOP,
+                label,
+                font(15.0, Weight::Regular),
+                p.muted,
+            );
+            painter.text(
+                pos2(x, stats_y + 24.0),
+                Align2::LEFT_TOP,
+                value,
+                font(22.0, Weight::Medium),
+                p.text,
+            );
+            x += 170.0;
+        }
+
+        let chart_w = 380.0_f32.min(rect.width() * 0.4);
+        let chart = Rect::from_min_max(
+            pos2(rect.right() - 28.0 - chart_w, rect.top() + 20.0),
+            pos2(rect.right() - 28.0, rect.bottom() - 16.0),
+        );
+        self.week_chart(ui, chart, today, sit_color, stand_color, p);
+    }
+
+    /// Stacked bars of sitting and standing time for the last seven days.
+    fn week_chart(
+        &self,
+        ui: &mut Ui,
+        rect: Rect,
+        today: chrono::NaiveDate,
+        sit_color: Color32,
+        stand_color: Color32,
+        p: &Palette,
+    ) {
+        let painter = ui.painter();
+        painter.text(
+            rect.left_top(),
+            Align2::LEFT_TOP,
+            "Last 7 days",
+            font(13.5, Weight::Medium),
+            p.muted,
+        );
+
+        let days: Vec<_> = (0..7u64)
+            .rev()
+            .map(|ago| {
+                let date = today - chrono::Days::new(ago);
+                (date, self.tracker.history.day(date))
+            })
+            .collect();
+        let max = days
+            .iter()
+            .map(|(_, d)| d.sitting_s + d.standing_s)
+            .fold(0.0, f64::max)
+            .max(3600.0);
+        let plot = Rect::from_min_max(
+            pos2(rect.left(), rect.top() + 26.0),
+            pos2(rect.right(), rect.bottom() - 20.0),
+        );
+        let slot = plot.width() / 7.0;
+        let bar_w = (slot * 0.5).min(22.0);
+        painter.line_segment(
+            [plot.left_bottom(), plot.right_bottom()],
+            Stroke::new(1.0, p.divider),
+        );
+        let top = egui::CornerRadius {
+            nw: 4,
+            ne: 4,
+            sw: 0,
+            se: 0,
+        };
+        for (i, (date, d)) in days.iter().enumerate() {
+            let cx = plot.left() + slot * (i as f32 + 0.5);
+            let scale = |secs: f64| (secs / max) as f32 * plot.height();
+            let sit_h = scale(d.sitting_s);
+            let stand_h = scale(d.standing_s);
+            let gap = if sit_h > 0.0 && stand_h > 0.0 {
+                2.0
+            } else {
+                0.0
+            };
+            let x0 = cx - bar_w / 2.0;
+            let sit = Rect::from_min_max(
+                pos2(x0, plot.bottom() - sit_h),
+                pos2(x0 + bar_w, plot.bottom()),
+            );
+            let stand = Rect::from_min_max(
+                pos2(x0, sit.top() - gap - stand_h),
+                pos2(x0 + bar_w, sit.top() - gap),
+            );
+            let painter = ui.painter();
+            if sit_h > 0.0 {
+                let r = if stand_h > 0.0 { 0.into() } else { top };
+                painter.rect_filled(sit, r, sit_color);
+            }
+            if stand_h > 0.0 {
+                painter.rect_filled(stand, top, stand_color);
+            }
+            let is_today = i == 6;
+            painter.text(
+                pos2(cx, plot.bottom() + 4.0),
+                Align2::CENTER_TOP,
+                if is_today {
+                    "Today".to_string()
+                } else {
+                    date.format("%a").to_string()
+                },
+                font(
+                    12.5,
+                    if is_today {
+                        Weight::Medium
+                    } else {
+                        Weight::Regular
+                    },
+                ),
+                if is_today { p.text } else { p.muted },
+            );
+            let hit = Rect::from_min_max(
+                pos2(cx - slot / 2.0, plot.top()),
+                pos2(cx + slot / 2.0, plot.bottom() + 18.0),
+            );
+            let resp = ui.interact(hit, Id::new(("week_bar", i)), Sense::hover());
+            if resp.hovered() {
+                ui.painter()
+                    .rect_filled(hit.shrink2(vec2(4.0, 0.0)), 6, alpha(p.text, 0.04));
+            }
+            resp.on_hover_text(format!(
+                "{}\nSitting  {}\nStanding  {}",
+                date.format("%A %-d %B"),
+                activity::format_duration(d.sitting_s),
+                activity::format_duration(d.standing_s),
+            ));
+        }
+    }
+
+    /// Suggests changing position after holding one for too long.
+    fn reminder_prompt(&mut self, ctx: &egui::Context, p: &Palette) {
+        let Some(held_posture) = self.reminder else {
+            return;
+        };
+        let now = Instant::now();
+        let held = self
+            .tracker
+            .current(now)
+            .filter(|_| !self.dev.capturing())
+            .map(|(_, d)| d.as_secs_f64())
+            .unwrap_or_else(|| {
+                // Screenshot runs show the prompt without a real streak.
+                f64::from(match held_posture {
+                    Posture::Sitting => self.cfg.reminders.after_sitting_min,
+                    Posture::Standing => self.cfg.reminders.after_standing_min,
+                }) * 60.0
+            });
+        let to = held_posture.other();
+        let target = activity::target(&self.cfg, to, self.standing_from_mm()).cloned();
+        let (glyph, title, verb, action) = match to {
+            Posture::Standing => (icon::PERSON, "Time to stand up", "sitting", "Stand up"),
+            Posture::Sitting => (
+                icon::OFFICE_CHAIR,
+                "Time to sit down",
+                "standing",
+                "Sit down",
+            ),
+        };
+        let snooze = self.cfg.reminders.snooze_min;
+
+        let frame = egui::Frame::new()
+            .fill(p.card)
+            .stroke(Stroke::new(1.0, p.border))
+            .corner_radius(18)
+            .inner_margin(28);
+        let mut choice = None;
+        let modal = egui::Modal::new(Id::new("reminder"))
+            .frame(frame)
+            .show(ctx, |ui| {
+                ui.set_width(440.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(glyph)
+                            .font(theme::icon_font(40.0))
+                            .color(p.text),
+                    );
+                    ui.add_space(10.0);
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new(title).font(font(24.0, Weight::SemiBold)));
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "You've been {verb} for {}.",
+                                activity::format_duration(held)
+                            ))
+                            .font(font(16.0, Weight::Regular))
+                            .color(p.muted),
+                        );
+                    });
+                });
+                ui.add_space(20.0);
+                ui.horizontal(|ui| {
+                    match &target {
+                        Some(fav) if self.conn == Conn::Connected => {
+                            let label = format!("{action}  ·  {:.1} cm", fav.height_mm / 10.0);
+                            if Button::primary(&label, p)
+                                .font(font(15.5, Weight::Medium))
+                                .show(ui, vec2(200.0, 42.0))
+                                .clicked()
+                            {
+                                choice = Some(ReminderChoice::Move);
+                            }
+                        }
+                        _ => {
+                            ui.label(
+                                egui::RichText::new(match to {
+                                    Posture::Standing => "Raise the desk when you're ready.",
+                                    Posture::Sitting => "Lower the desk when you're ready.",
+                                })
+                                .color(p.muted),
+                            );
+                        }
+                    }
+                    let snooze_label = format!("Snooze {snooze} min");
+                    if Button::tinted(&snooze_label, p)
+                        .font(font(15.5, Weight::Medium))
+                        .show(ui, vec2(130.0, 42.0))
+                        .clicked()
+                    {
+                        choice = Some(ReminderChoice::Snooze);
+                    }
+                    if Button::ghost("Dismiss", p)
+                        .font(font(15.5, Weight::Medium))
+                        .show(ui, vec2(90.0, 42.0))
+                        .clicked()
+                    {
+                        choice = Some(ReminderChoice::Dismiss);
+                    }
+                });
+            });
+        if choice.is_none() && modal.should_close() {
+            choice = Some(ReminderChoice::Snooze);
+        }
+        match choice {
+            Some(ReminderChoice::Move) => {
+                if let Some(fav) = target {
+                    self.move_to_mm(fav.height_mm, fav.name);
+                }
+                self.tracker.dismiss();
+                self.reminder = None;
+            }
+            Some(ReminderChoice::Snooze) => {
+                self.tracker.snooze(now, snooze);
+                self.reminder = None;
+            }
+            Some(ReminderChoice::Dismiss) => {
+                self.tracker.dismiss();
+                self.reminder = None;
+            }
+            None => {}
         }
     }
 
@@ -900,7 +1340,8 @@ impl DeskApp {
                 });
             });
             ui.add_space(14.0);
-
+            let max_h = (ctx.content_rect().height() - 200.0).max(240.0);
+            egui::ScrollArea::vertical().max_height(max_h).min_scrolled_height(max_h).show(ui, |ui| {
             section(ui, "Appearance", p);
             ui.label("Theme");
             let idx = self.cfg.theme as usize;
@@ -929,6 +1370,68 @@ impl DeskApp {
             } else {
                 ui.label(egui::RichText::new("No system tray is available on this desktop.").color(p.muted));
             }
+            ui.add_space(16.0);
+            section(ui, "Activity", p);
+            let mut standing_cm = self.standing_from_mm() / 10.0;
+            ui.horizontal(|ui| {
+                ui.label("Count as standing from");
+                if ui.add(egui::DragValue::new(&mut standing_cm).range(50.0..=200.0).speed(0.1).suffix(" cm").fixed_decimals(1)).changed() {
+                    self.cfg.standing_from_mm = Some(standing_cm * 10.0);
+                    changed = true;
+                }
+                if self.cfg.standing_from_mm.is_some() && ui.small_button("Auto").on_hover_text("Halfway between the sitting and standing favourites").clicked() {
+                    self.cfg.standing_from_mm = None;
+                    changed = true;
+                }
+            });
+            ui.add_space(6.0);
+            let r = &mut self.cfg.reminders;
+            ui.horizontal(|ui| {
+                changed |= widgets::toggle(ui, &mut r.stand_up, "Remind me to stand up after", p);
+                changed |= ui.add_enabled(r.stand_up, egui::DragValue::new(&mut r.after_sitting_min).range(5..=240).suffix(" min sitting")).changed();
+            });
+            ui.horizontal(|ui| {
+                changed |= widgets::toggle(ui, &mut r.sit_down, "Remind me to sit down after", p);
+                changed |= ui.add_enabled(r.sit_down, egui::DragValue::new(&mut r.after_standing_min).range(5..=240).suffix(" min standing")).changed();
+            });
+            ui.horizontal(|ui| {
+                ui.label("Snooze for");
+                changed |= ui.add_enabled(r.stand_up || r.sit_down, egui::DragValue::new(&mut r.snooze_min).range(1..=120).suffix(" min")).changed();
+            });
+
+            ui.add_space(16.0);
+            section(ui, "Updates", p);
+            changed |= widgets::toggle(ui, &mut self.cfg.check_updates, "Check for updates automatically", p);
+            ui.horizontal(|ui| {
+                let status = self.updater.status();
+                let text = match &status {
+                    update::Status::Idle => String::new(),
+                    update::Status::Checking => "  ·  Checking…".into(),
+                    update::Status::UpToDate => "  ·  Up to date".into(),
+                    update::Status::Available(r) => format!("  ·  {} is available", r.version),
+                    update::Status::Downloading(_) => "  ·  Downloading…".into(),
+                    update::Status::Installing => "  ·  Installing…".into(),
+                    update::Status::Failed(e) => format!("  ·  {e}"),
+                };
+                ui.label(egui::RichText::new(format!("Version {}{text}", update::CURRENT)).color(p.muted));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    match status {
+                        update::Status::Available(release) => {
+                            let label = if Updater::can_install(&release) { "Install update" } else { "Download" };
+                            if Button::primary(label, p).font(font(15.0, Weight::Medium)).show(ui, vec2(140.0, 34.0)).clicked() {
+                                self.updater.install(release);
+                            }
+                        }
+                        update::Status::Checking | update::Status::Downloading(_) | update::Status::Installing => {}
+                        _ => {
+                            if Button::tinted("Check now", p).font(font(15.0, Weight::Medium)).show(ui, vec2(120.0, 34.0)).clicked() {
+                                self.updater.check();
+                            }
+                        }
+                    }
+                });
+            });
+
             ui.add_space(16.0);
             section(ui, "Desk", p);
             if let Some(desk) = &self.cfg.desk {
@@ -972,6 +1475,7 @@ impl DeskApp {
                     changed = true;
                 }
             });
+            });
             if changed {
                 self.cfg.save();
             }
@@ -1010,6 +1514,12 @@ impl DeskApp {
         painter.galley(rect.min + vec2(18.0, 11.0), galley, alpha(p.on_primary, a));
         ui.ctx().request_repaint();
     }
+}
+
+enum ReminderChoice {
+    Move,
+    Snooze,
+    Dismiss,
 }
 
 enum FavAction {
@@ -1063,7 +1573,13 @@ impl eframe::App for DeskApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let now = ctx.input(|i| i.time);
         self.process_events(now);
+        self.track(ctx);
+        self.updates(ctx);
         self.window_and_tray(ctx);
+    }
+
+    fn on_exit(&mut self) {
+        self.tracker.save(Instant::now());
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
@@ -1081,6 +1597,7 @@ impl eframe::App for DeskApp {
             Screen::Onboarding => self.onboarding_view(ui, &p),
         }
         self.settings(&ctx, &p);
+        self.reminder_prompt(&ctx, &p);
         self.paint_toast(ui, &p);
         if self.screen == Screen::Onboarding {
             self.autopilot();

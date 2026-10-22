@@ -7,10 +7,12 @@
 //! - `DESK_CTRL_SELECT=<device id or name>` picks that device on the Find step.
 //! - `DESK_CTRL_SETTINGS=1` opens the settings dialog on start.
 //! - `DESK_CTRL_MOVE_TO=<mm>` moves the desk there once connected.
-//! - `DESK_CTRL_EXPORT_ICONS=<dir>` writes the icons as PNGs and exits.
+//! - `DESK_CTRL_REMINDER=stand|sit` shows the reminder to stand up or sit down.
+//! - `DESK_CTRL_EXPORT_ICONS=<dir>` writes the icons as PNGs (and an ICO) and exits.
 
 use std::path::PathBuf;
 
+use crate::activity::Posture;
 use crate::onboarding::Step;
 
 #[derive(Default)]
@@ -21,6 +23,8 @@ pub struct DevTools {
     pub select: Option<String>,
     pub open_settings: bool,
     pub move_to: Option<f32>,
+    /// The posture held too long, for a reminder shown on start.
+    pub reminder: Option<Posture>,
 }
 
 impl DevTools {
@@ -43,6 +47,11 @@ impl DevTools {
             select: var("DESK_CTRL_SELECT"),
             open_settings: var("DESK_CTRL_SETTINGS").is_some(),
             move_to: var("DESK_CTRL_MOVE_TO").and_then(|v| v.parse().ok()),
+            reminder: var("DESK_CTRL_REMINDER").and_then(|s| match s.as_str() {
+                "stand" => Some(Posture::Sitting),
+                "sit" => Some(Posture::Standing),
+                _ => None,
+            }),
         }
     }
 
@@ -80,7 +89,7 @@ impl DevTools {
 }
 
 /// Writes the app icon at several sizes plus both tray glyph variants as PNGs,
-/// for packaging (`DESK_CTRL_EXPORT_ICONS=<dir>`).
+/// and a multi-size `icon.ico`, for packaging (`DESK_CTRL_EXPORT_ICONS=<dir>`).
 pub fn export_icons(dir: &std::path::Path) -> std::io::Result<()> {
     use crate::icon::{GLYPH_DARK, GLYPH_LIGHT, Style, app_style, render};
     std::fs::create_dir_all(dir)?;
@@ -99,5 +108,19 @@ pub fn export_icons(dir: &std::path::Path) -> std::io::Result<()> {
     }
     save("tray-light.png".into(), 64, &Style::Glyph(GLYPH_LIGHT))?;
     save("tray-dark.png".into(), 64, &Style::Glyph(GLYPH_DARK))?;
-    Ok(())
+    let frames = [16, 24, 32, 48, 64, 128, 256]
+        .into_iter()
+        .map(|size| {
+            image::codecs::ico::IcoFrame::as_png(
+                &render(size, &app_style()),
+                size,
+                size,
+                image::ExtendedColorType::Rgba8,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(std::io::Error::other)?;
+    image::codecs::ico::IcoEncoder::new(std::fs::File::create(dir.join("icon.ico"))?)
+        .encode_images(&frames)
+        .map_err(std::io::Error::other)
 }
