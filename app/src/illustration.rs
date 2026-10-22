@@ -24,26 +24,49 @@ pub fn paint(ui: &Ui, rect: Rect, scene: &DeskScene, p: &Palette) {
     let floor_y = rect.bottom() - rect.height() * 0.14;
     let mut cx = rect.left() + rect.width() * scene.center_x;
 
+    let label_format = egui::TextFormat {
+        font_id: font(14.0, Weight::Regular),
+        color: p.text,
+        ..Default::default()
+    };
+    // Width right of the dimension line taken by its label, plus a margin.
+    let label_w = match scene.label {
+        Some(_) => 18.0 + crate::widgets::tabular_width(&painter, "000.0 cm", &label_format),
+        None => 0.0,
+    };
+    // Design units right of the tabletop's front edge: its depth, then the gap
+    // before the dimension line.
+    const RIGHT_UNITS: f32 = 34.0 + 18.0;
+    let units_per_mm = 540.0 / 2000.0;
+
     // Heights are to scale; the desk is drawn wider than life (2 m) to match
-    // the mockup's proportions. The monitor reaches ~52 cm above the top.
-    let px_per_mm =
-        (rect.width() * 0.56 / 2000.0).min((floor_y - rect.top() - 16.0) / (scene.max_mm + 520.0));
-    let dw = 2000.0 * px_per_mm;
-    let u = dw / 540.0; // design unit; the desk is 540 units wide
-    let top_y = floor_y - scene.height_mm * px_per_mm;
+    // the mockup's proportions. The monitor reaches ~60 cm above the front edge.
+    let mut px_per_mm =
+        (rect.width() * 0.56 / 2000.0).min((floor_y - rect.top() - 16.0) / (scene.max_mm + 600.0));
     if let Some(avoid) = scene.avoid {
         // Decide from the highest position, not the current one, so the desk
         // never jumps sideways while the height animates. The plant reaches
-        // ~75 units above the tabletop at the left end.
+        // ~100 units above the front edge at the left end.
         let gap = 24.0;
-        let left_edge = cx - dw / 2.0;
+        let u = px_per_mm / units_per_mm;
         let highest_top = floor_y - scene.max_mm * px_per_mm;
-        if highest_top - 75.0 * u < avoid.bottom() && left_edge < avoid.right() + gap {
-            // Leave room for the dimension label on the right.
-            let max_cx = rect.right() - dw / 2.0 - 110.0 * u;
-            cx = (cx + avoid.right() + gap - left_edge).min(max_cx.max(cx));
+        let clear_x = avoid.right() + gap;
+        if highest_top - 100.0 * u < avoid.bottom() && cx - 1000.0 * px_per_mm < clear_x {
+            // Fit the desk and its dimension label between the text and the
+            // right edge, drawing it smaller if needed.
+            let space = rect.right() - clear_x - label_w;
+            px_per_mm = px_per_mm.min(space / (2000.0 + RIGHT_UNITS / units_per_mm));
+            cx = cx.max(clear_x + 1000.0 * px_per_mm);
         }
     }
+    let dw = 2000.0 * px_per_mm;
+    let u = dw / 540.0; // design unit; the desk is 540 units wide
+    // Keep the dimension label inside the scene.
+    cx = cx.min(rect.right() - label_w - RIGHT_UNITS * u - dw / 2.0);
+    let top_y = floor_y - scene.height_mm * px_per_mm;
+    // Oblique projection: the back of the desk is up and to the right. Every
+    // front-to-back line (tabletop, feet, things on the desk) follows `depth`.
+    let depth = vec2(34.0 * u, -40.0 * u);
 
     let wood_top = hex(0xe0c29b);
     let wood_edge = hex(0xc9a374);
@@ -54,48 +77,55 @@ pub fn paint(ui: &Ui, rect: Rect, scene: &DeskScene, p: &Palette) {
         (hex(0x2a2a2a), hex(0x3d3d3d))
     };
 
-    // Oblique projection: the back of the desk is up and to the right.
-    let depth = vec2(9.0 * u, -16.0 * u);
     let thick = 9.0 * u;
     let left = cx - dw / 2.0;
     let right = cx + dw / 2.0;
+    // A point on the tabletop: `x` along the front edge, `t` from the front (0)
+    // to the back (1).
+    let on_top = |x: f32, t: f32| pos2(x, top_y) + depth * t;
+    // A flat quad on the tabletop.
+    let plate = |x0: f32, x1: f32, t0: f32, t1: f32| {
+        vec![
+            on_top(x0, t0),
+            on_top(x1, t0),
+            on_top(x1, t1),
+            on_top(x0, t1),
+        ]
+    };
 
-    // Floor shadow.
+    // Floor shadow, centered under the middle of the desk's depth.
+    let shadow_c = pos2(cx, floor_y) + depth * 0.5;
     for i in 0..6 {
         let k = 1.0 - i as f32 * 0.14;
         painter.add(Shape::ellipse_filled(
-            pos2(cx + 10.0 * u, floor_y + 2.0 * u),
-            vec2(dw * 0.56 * k + 18.0 * u, 20.0 * u * k),
+            shadow_c,
+            vec2(dw * 0.56 * k + 18.0 * u, -depth.y * 0.8 * k),
             alpha(p.shadow(), 0.22),
         ));
     }
 
-    // Legs and feet.
+    // Legs and feet. The columns stand at mid-depth; the feet run front to
+    // back along `depth`, a little longer than the top is deep.
     let leg_xs = [left + dw * 0.15, right - dw * 0.15];
     let lower_len = 290.0 * px_per_mm;
     for &x in &leg_xs {
-        // Foot: a bar running front-to-back.
-        let a = pos2(x - 22.0 * u, floor_y + 8.0 * u);
-        let b = pos2(x + 30.0 * u, floor_y - 18.0 * u);
-        let w = 9.0 * u;
-        painter.line_segment([a, b], Stroke::new(w, metal));
-        painter.circle_filled(a, w / 2.0, metal);
-        painter.circle_filled(b, w / 2.0, metal);
-        painter.rect_filled(
-            Rect::from_center_size(a + vec2(0.0, w * 0.6), vec2(w * 1.4, 2.0 * u)),
-            1,
-            metal,
-        );
+        let foot_w = 9.0 * u;
+        let a = pos2(x, floor_y) + depth * -0.1;
+        let b = pos2(x, floor_y) + depth * 1.1;
+        painter.line_segment([a, b], Stroke::new(foot_w, metal));
+        painter.circle_filled(a, foot_w / 2.0, metal);
+        painter.circle_filled(b, foot_w / 2.0, metal);
 
         // Telescoping column: wide lower stage, narrower upper stage.
-        let leg_base = floor_y - 4.0 * u;
+        let base = pos2(x, floor_y) + depth * 0.5;
+        let leg_base = base.y - 2.0 * u;
         let lower = Rect::from_min_max(
-            pos2(x - 12.0 * u, leg_base - lower_len),
-            pos2(x + 12.0 * u, leg_base),
+            pos2(base.x - 12.0 * u, leg_base - lower_len),
+            pos2(base.x + 12.0 * u, leg_base),
         );
         let upper = Rect::from_min_max(
-            pos2(x - 9.5 * u, top_y + thick),
-            pos2(x + 9.5 * u, lower.top() + 2.0),
+            pos2(base.x - 9.5 * u, top_y + thick + depth.y * 0.5),
+            pos2(base.x + 9.5 * u, lower.top() + 2.0),
         );
         if upper.height() > 0.0 {
             painter.rect_filled(upper, 1, metal);
@@ -122,12 +152,6 @@ pub fn paint(ui: &Ui, rect: Rect, scene: &DeskScene, p: &Palette) {
         );
     }
 
-    // Frame under the top.
-    let beam = Rect::from_min_max(
-        pos2(leg_xs[0] - 4.0 * u, top_y + thick),
-        pos2(leg_xs[1] + 4.0 * u, top_y + thick + 5.0 * u),
-    );
-    painter.rect_filled(beam, 1, metal);
     // Control panel under the right front edge.
     let panel = Rect::from_min_size(
         pos2(right - dw * 0.27, top_y + thick),
@@ -159,19 +183,23 @@ pub fn paint(ui: &Ui, rect: Rect, scene: &DeskScene, p: &Palette) {
         Stroke::new(1.0, mix(wood_top, Color32::WHITE, 0.35)),
     );
 
-    // Monitor.
-    let mon_c = pos2(cx + 40.0 * u, top_y + depth.y * 0.55);
-    let stand_base =
-        Rect::from_center_size(mon_c + vec2(depth.x * 0.55, 0.0), vec2(46.0 * u, 3.5 * u));
-    painter.rect_filled(stand_base, 2, hex(0x1b1b1b));
+    // Things on the desk, back to front. First the monitor near the back, on
+    // a flat base plate.
+    let mon_x = cx + 30.0 * u;
+    painter.add(Shape::convex_polygon(
+        plate(mon_x - 26.0 * u, mon_x + 26.0 * u, 0.62, 0.86),
+        hex(0x1b1b1b),
+        Stroke::NONE,
+    ));
+    let neck_foot = on_top(mon_x, 0.76);
     let neck = Rect::from_min_max(
-        pos2(stand_base.center().x - 3.0 * u, mon_c.y - 40.0 * u),
-        pos2(stand_base.center().x + 3.0 * u, mon_c.y),
+        pos2(neck_foot.x - 3.5 * u, neck_foot.y - 38.0 * u),
+        pos2(neck_foot.x + 3.5 * u, neck_foot.y),
     );
     painter.rect_filled(neck, 1, hex(0x202020));
     let screen = Rect::from_center_size(
-        pos2(neck.center().x, mon_c.y - 40.0 * u - 52.0 * u),
-        vec2(205.0 * u, 120.0 * u),
+        pos2(neck.center().x, neck.top() - 44.0 * u),
+        vec2(190.0 * u, 108.0 * u),
     );
     painter.rect_filled(
         screen.translate(vec2(2.0 * u, 3.0 * u)),
@@ -192,31 +220,52 @@ pub fn paint(ui: &Ui, rect: Rect, scene: &DeskScene, p: &Palette) {
         Stroke::NONE,
     ));
 
-    // Keyboard and mouse.
-    let kb_y = top_y + depth.y * 0.32;
-    let kb_x = cx - 15.0 * u;
-    let kb = [
-        pos2(kb_x - 52.0 * u, kb_y + 2.5 * u),
-        pos2(kb_x + 52.0 * u, kb_y + 2.5 * u),
-        pos2(kb_x + 55.0 * u, kb_y - 2.5 * u),
-        pos2(kb_x - 49.0 * u, kb_y - 2.5 * u),
-    ];
+    paint_plant(&painter, on_top(left + dw * 0.17, 0.5), u * 1.35);
+
+    // Keyboard (roughly 44 by 14 cm) near the front edge, with a mouse beside it.
+    let kb_x0 = cx - 72.0 * u;
+    let kb_x1 = kb_x0 + 120.0 * u;
+    let (kb_t0, kb_t1) = (0.1, 0.32);
+    let lift = vec2(0.0, -2.5 * u);
     painter.add(Shape::convex_polygon(
-        kb.to_vec(),
-        hex(0x2b2b2b),
+        vec![
+            on_top(kb_x0, kb_t0),
+            on_top(kb_x1, kb_t0),
+            on_top(kb_x1, kb_t0) + lift,
+            on_top(kb_x0, kb_t0) + lift,
+        ],
+        hex(0x1c1c1c),
         Stroke::NONE,
     ));
+    let kb_top = plate(kb_x0, kb_x1, kb_t0, kb_t1)
+        .into_iter()
+        .map(|q| q + lift)
+        .collect();
+    painter.add(Shape::convex_polygon(kb_top, hex(0x2e2e2e), Stroke::NONE));
+    // Rows of keys.
+    let key_stroke = Stroke::new((0.9 * u).max(1.0), hex(0x3d3d3d));
+    for row in 1..5 {
+        let t = kb_t0 + (kb_t1 - kb_t0) * row as f32 / 5.0;
+        let inset = 5.0 * u;
+        painter.line_segment(
+            [
+                on_top(kb_x0 + inset, t) + lift,
+                on_top(kb_x1 - inset, t) + lift,
+            ],
+            key_stroke,
+        );
+    }
+    let mouse = on_top(kb_x1 + 26.0 * u, 0.22);
     painter.add(Shape::ellipse_filled(
-        pos2(cx + 72.0 * u, kb_y),
-        vec2(6.5 * u, 3.2 * u),
+        mouse + vec2(1.0 * u, 1.0 * u),
+        vec2(8.5 * u, 4.5 * u),
+        Color32::from_black_alpha(30),
+    ));
+    painter.add(Shape::ellipse_filled(
+        mouse + lift * 0.6,
+        vec2(8.0 * u, 4.5 * u),
         hex(0x2b2b2b),
     ));
-
-    paint_plant(
-        &painter,
-        pos2(left + dw * 0.2, top_y + depth.y * 0.5),
-        u * 1.35,
-    );
 
     // Dimension line on the right.
     if let Some(label) = &scene.label {
@@ -227,25 +276,10 @@ pub fn paint(ui: &Ui, rect: Rect, scene: &DeskScene, p: &Palette) {
         for y in [top_y, floor_y] {
             painter.line_segment([pos2(x - 6.0, y), pos2(x + 6.0, y)], s);
         }
-        let text_pos = pos2(x + 10.0, (top_y + floor_y) / 2.0);
-        let format = egui::TextFormat {
-            font_id: font(14.0, Weight::Regular),
-            color: p.text,
-            ..Default::default()
-        };
-        let (job, trailing) = crate::widgets::tabular_job(&painter, label, &format);
+        // The desk was placed so the label fits to the right of the line.
+        let (job, _) = crate::widgets::tabular_job(&painter, label, &label_format);
         let galley = painter.layout_job(job);
-        // Put the label inside if a label for the highest position would be
-        // clipped on the right (a fixed decision, so it never flips sides).
-        let widest = crate::widgets::tabular_width(&painter, "000.0 cm", &format);
-        let pos = if text_pos.x + widest > rect.right() - 8.0 {
-            pos2(
-                x - 10.0 - galley.size().x - trailing,
-                text_pos.y - galley.size().y / 2.0,
-            )
-        } else {
-            pos2(text_pos.x, text_pos.y - galley.size().y / 2.0)
-        };
+        let pos = pos2(x + 10.0, (top_y + floor_y - galley.size().y) / 2.0);
         painter.galley(pos, galley, p.text);
     }
 }
